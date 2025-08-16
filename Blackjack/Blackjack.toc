@@ -1,8 +1,0 @@
-## Interface: 100207
-## Title: Blackjack
-## Notes: Trade-first Blackjack with license gate
-## Author: Brewer
-## Version: 1.0.0
-## SavedVariables: Blackjack_DB
-
-Blackjack.lua
