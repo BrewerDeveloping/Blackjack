@@ -17,7 +17,7 @@ local BJ_PAY_NUM, BJ_PAY_DEN = 3, 2        -- 3:2 blackjack
 local USE_COLOR = false
 local NUM_DEALER_SUITS = 4                 -- how many suit varieties to randomize (1..4)
 local RULESET_ENHC = true                  -- ENHC: no hole card until resolve
-local DO_EMOTES = true                     -- <-- announce key events via /emote
+local DO_EMOTES = true                     -- announce key events via /emote (bet, final hands, win/loss only)
 
 -- UI theme (TSM-style)
 local TEX_WHITE = "Interface\\Buttons\\WHITE8x8"
@@ -126,7 +126,11 @@ end
 
 local function esc(s) return tostring(s or ""):gsub("|","||") end
 local function whisper(msg, player) SendChatMessage(esc(msg), "WHISPER", nil, player) end
-local function emote(msg) if DO_EMOTES then SendChatMessage(esc(msg), "EMOTE") end end
+local function emote(msg)
+  if DO_EMOTES then
+    SendChatMessage("{rt3} "..esc(msg).." {rt3}", "EMOTE")
+  end
+end
 
 local function fmtMoney(c)
   c = math.max(0, math.floor(tonumber(c) or 0))
@@ -266,10 +270,18 @@ local function fmtHandLong(cards, hideSecond)
 end
 
 -- ===================== Dealer reveal helper =====================
+local function emoteFinalHands(player, H)
+  local pt = ({handValue(H.phand)})[1] or 0
+  local dt = ({handValue(H.dhand)})[1] or 0
+  emote(string.format("Final — %s: %s (%d)  vs  Dealer: %s (%d).",
+    player or "Player", fmtHandLong(H.phand, false), pt, fmtHandLong(H.dhand, false), dt))
+end
+
 local function whisperDealerReveal(player, H)
   local total = ({handValue(H.dhand)})[1]
   whisper(string.format("Dealer reveals: %s (%d).", fmtHandLong(H.dhand, false), total), player)
-  emote(string.format("reveals %s (%d).", fmtHandLong(H.dhand, false), total))
+  -- Emote the final hands (player vs dealer) at reveal time
+  emoteFinalHands(player, H)
 end
 
 -- ===================== Hand model =====================
@@ -321,23 +333,24 @@ local function settle(player, outcome, payout_c)
   local H = handFor(player)
   local PStats = ensurePStats(player)
   PStats.rounds = PStats.rounds + 1
+
   if outcome == "player" then
     PStats.wins = PStats.wins + 1
     PStats.net  = PStats.net + (H.bet or 0)
-    emote(string.format("pays %s %s.", player, fmtMoney(payout_c or 0)))
+    emote(string.format("%s wins %s.", player, fmtMoney(payout_c or 0)))
   elseif outcome == "dealer" then
     PStats.losses = PStats.losses + 1
     PStats.net    = PStats.net - (H.bet or 0)
-    emote(string.format("wins against %s.", player))
+    emote(string.format("%s loses %s.", player, fmtMoney(H.bet or 0)))
   elseif outcome == "push" then
     PStats.pushes = PStats.pushes + 1
-    emote(string.format("pushes with %s and returns %s.", player, fmtMoney(payout_c or 0)))
+    -- No emote for push per request
   elseif outcome == "blackjack" then
     PStats.wins = PStats.wins + 1
     PStats.bj   = (PStats.bj or 0) + 1
     local profit = math.floor((H.bet or 0) * BJ_PAY_NUM / BJ_PAY_DEN + 0.5)
     PStats.net = PStats.net + profit
-    emote(string.format("%s has Blackjack! Paying %s.", player, fmtMoney(payout_c or 0)))
+    emote(string.format("%s wins %s (Blackjack).", player, fmtMoney(payout_c or 0)))
   end
 
   addHostNetDelta(H, outcome)
@@ -406,7 +419,6 @@ local function takePlayerRoll(player, value)
     return true
   end
 
-  emote(string.format("notes %s's roll: %d.", player, n))
   whisper(string.format("Roll received: %d.", n), player)
 
   local H = handFor(player)
@@ -414,7 +426,6 @@ local function takePlayerRoll(player, value)
 
   if st.stage == "deal1" then
     table.insert(H.phand, card)
-    emote(string.format("deals %s %s as the first card.", player, fmtCard(card)))
     whisper(string.format("Got it: %s", fmtCard(card)), player)
     PendingRoll[player] = nil
     if BlackjackHost and BlackjackHost.Update then BlackjackHost.Update() end
@@ -422,7 +433,6 @@ local function takePlayerRoll(player, value)
 
   elseif st.stage == "deal2" then
     table.insert(H.phand, card)
-    emote(string.format("deals %s a second card: %s.", player, fmtCard(card)))
     whisper(string.format("Second card: %s", fmtCard(card)), player)
 
     -- Dealer draws ONE upcard via /roll (ENHC)
@@ -438,10 +448,12 @@ local function takePlayerRoll(player, value)
       if BlackjackHost and BlackjackHost.Update then BlackjackHost.Update() end
 
       if isBlackjack(H.phand) then
+        -- Emote final known cards for BJ (dealer has only upcard in ENHC)
+        emote(string.format("Final — %s: %s (21)  vs  Dealer shows: %s.",
+          player, fmtHandLong(H.phand, false), fmtCard(H.dhand[1] or "A")))
         local win  = math.floor(H.bet * BJ_PAY_NUM / BJ_PAY_DEN + 0.5)
         local pay  = H.bet + win
         Trade.mode = "payout"; Trade.amount = pay; if BlackjackHost and BlackjackHost.Update then BlackjackHost.Update() end
-        emote(string.format("%s has Blackjack vs my %s! Paying %s.", player, fmtCard(H.dhand[1] or "A"), fmtMoney(pay)))
         whisper(string.format("Player: %s (Blackjack!) | Dealer up: %s. You win %s (returned %s).",
           fmtHandLong(H.phand), dUp, fmtMoney(win), fmtMoney(pay)), player)
         whisper(string.format("Paying %s to you. Please open a trade to receive.", fmtMoney(pay)), player)
@@ -458,12 +470,10 @@ local function takePlayerRoll(player, value)
   elseif st.stage == "hit" then
     table.insert(H.phand, card)
     local total, soft = handValue(H.phand)
-    emote(string.format("hits %s: %s. Hand now %d%s.", player, fmtCard(card), total, soft and " (soft)" or ""))
     whisper(string.format("You draw: %s. Hand: %s (%d%s).",
       fmtCard(card), fmtHandLong(H.phand), total, soft and " soft" or ""), player)
     if BlackjackHost and BlackjackHost.Update then BlackjackHost.Update() end
     if total > 21 then
-      emote(string.format("%s busts at %d. I win.", player, total))
       whisper(string.format("Busted at %d. Dealer wins.", total), player)
       tradeReset(); settle(player, "dealer", 0)
     else
@@ -474,7 +484,6 @@ local function takePlayerRoll(player, value)
   elseif st.stage == "double" then
     table.insert(H.phand, card)
     local pTotal = ({handValue(H.phand)})[1]
-    emote(string.format("deals %s a double card: %s (now %d).", player, fmtCard(card), pTotal))
     whisper(string.format("Double down draw: %s. Hand now %s (%d).",
       fmtCard(card), fmtHandLong(H.phand), pTotal), player)
     PendingRoll[player] = nil
@@ -485,25 +494,21 @@ local function takePlayerRoll(player, value)
       whisperDealerReveal(player, H)
       local pt = ({handValue(H.phand)})[1]
       if pt > 21 then
-        emote(string.format("%s busts at %d. I win.", player, pt))
         whisper("Busted. Dealer wins.", player)
         tradeReset(); settle(player, "dealer", 0)
       else
         if dTotal > 21 or pt > dTotal then
           local ret = H.bet * 2
           Trade.mode = "payout"; Trade.amount = ret; if BlackjackHost and BlackjackHost.Update then BlackjackHost.Update() end
-          emote(string.format("%s wins. Paying %s.", player, fmtMoney(ret)))
           whisper(string.format("You win %s. Returned %s.", fmtMoney(H.bet), fmtMoney(ret)), player)
           whisper(string.format("Paying %s to you. Please open a trade to receive.", fmtMoney(ret)), player)
           settle(player, "player", ret)
         elseif dTotal > pt then
-          emote(string.format("wins against %s (%d vs %d).", player, dTotal, pt))
           whisper("Dealer wins.", player)
           tradeReset(); settle(player, "dealer", 0)
         else
           local ret = H.bet
           Trade.mode = "payout"; Trade.amount = ret; if BlackjackHost and BlackjackHost.Update then BlackjackHost.Update() end
-          emote(string.format("push with %s. Returning %s.", player, fmtMoney(ret)))
           whisper(string.format("Push. Returned %s.", fmtMoney(ret)), player)
           whisper(string.format("Paying %s to you. Please open a trade to receive.", fmtMoney(ret)), player)
           settle(player, "push", ret)
@@ -536,16 +541,8 @@ local function onChatMsgSystem(msg)
     local n = tonumber(val) or 1
     local H = PendingDealerRoll.hand
     if H then
-      local prev = #(H.dhand or {})
-      local card = addSuit(rankFromRoll(n))
-      table.insert(H.dhand, card)
-      if prev == 0 then
-        emote(string.format("shows an upcard: %s.", fmtCard(card)))
-      elseif prev == 1 then
-        emote("draws a hole card.")
-      else
-        emote("draws a dealer hit card.")
-      end
+      table.insert(H.dhand, addSuit(rankFromRoll(n)))
+      -- no emotes for intermediate dealer cards per request
     end
     PendingDealerRoll.expect = false
     local cb = PendingDealerRoll.cb
@@ -576,23 +573,20 @@ end
 local function resolveAndQueuePayout(player)
   local H = handFor(player)
   dealerPlayAsync(H, function(dTotal)
-    whisperDealerReveal(player, H)
+    whisperDealerReveal(player, H) -- will emote final hands
     local pTotal = ({handValue(H.phand)})[1]
     if dTotal > 21 or pTotal > dTotal then
       local ret = H.bet * 2
       Trade.mode = "payout"; Trade.amount = ret; if BlackjackHost and BlackjackHost.Update then BlackjackHost.Update() end
-      emote(string.format("%s wins. Paying %s.", player, fmtMoney(ret)))
       whisper(string.format("You win %s. Returned %s.", fmtMoney(H.bet), fmtMoney(ret)), player)
       whisper(string.format("Paying %s to you. Please open a trade to receive.", fmtMoney(ret)), player)
       settle(player, "player", ret)
     elseif dTotal > pTotal then
-      emote(string.format("wins against %s (%d vs %d).", player, dTotal, pTotal))
       whisper("Dealer wins.", player)
       tradeReset(); settle(player, "dealer", 0)
     else
       local ret = H.bet
       Trade.mode = "payout"; Trade.amount = ret; if BlackjackHost and BlackjackHost.Update then BlackjackHost.Update() end
-      emote(string.format("push with %s. Returning %s.", player, fmtMoney(ret)))
       whisper(string.format("Push. Returned %s.", fmtMoney(ret)), player)
       whisper(string.format("Paying %s to you. Please open a trade to receive.", fmtMoney(ret)), player)
       settle(player, "push", ret)
@@ -785,7 +779,6 @@ local function onTradeAcceptUpdate(playerAccepted, targetAccepted)
       whisper(string.format("Double must be exactly %s.", fmtMoney(H.original or 0)), name)
       return
     end
-    emote(string.format("%s doubles down for %s.", name, fmtMoney(amountAtAccept)))
     whisper(string.format("Double of %s accepted. Roll one card (1–13).", fmtMoney(amountAtAccept)), name)
     tradeReset()
     H.doubled = true
@@ -796,7 +789,6 @@ local function onTradeAcceptUpdate(playerAccepted, targetAccepted)
 
   elseif mode == "payout" then
     DB.session.lastPayout = amountAtAccept
-    emote(string.format("hands %s %s.", name, fmtMoney(amountAtAccept)))
     whisper("Winnings delivered. You can bet again any time.", name)
     tradeReset()
     if BlackjackHost and BlackjackHost.Update then BlackjackHost.Update() end
@@ -874,6 +866,9 @@ local function BuildRulesText()
   t[#t+1] = ""
   t[#t+1] = "|cffffd100Dealer Panel Buttons|r"
   t[#t+1] = "- Open Trade, Say Paying, Force Reveal, Reset Round, Rules"
+  t[#t+1] = ""
+  t[#t+1] = "|cffffd100Emotes|r"
+  t[#t+1] = "- Only: Bet accepted, Final hands, Result amount (win/loss). Wrapped in {rt3} purple diamond."
   return table.concat(t, "\n")
 end
 
