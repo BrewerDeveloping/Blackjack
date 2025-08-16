@@ -1,6 +1,3 @@
-## Updated `README.md`
-
-```markdown
 # Blackjack (WoW Classic MoP) — README
 
 **Version:** 1.0.0  
